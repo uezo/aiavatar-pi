@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiavatar-pi"
+version = "0.1.0"
+description = "⚡️Ultra-low latency AI companion on edge devices.🍓 Talk to her anywhere, anytime."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "uezo", email = "uezo@uezo.net" }]
+
+dependencies = [
+    "websockets",
+    "Pillow",
+    "numpy",
+]
+
+[project.optional-dependencies]
+pc = ["pygame", "pyaudio"]
+pi = ["spidev", "RPi.GPIO"]
+
+[project.urls]
+Homepage = "https://github.com/uezo/aiavatar-pi"

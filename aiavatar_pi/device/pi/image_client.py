@@ -23,7 +23,8 @@ class PiImageClient(AIAvatarImageClient):
         *,
         lcd=None,
         buttons=None,
-        audio_device: str = None,
+        input_device: str = None,
+        output_device: str = None,
         mixer_card: str = None,
         mixer_control: str = None,
         volume: int = 100,
@@ -50,7 +51,8 @@ class PiImageClient(AIAvatarImageClient):
         # Audio backend (ALSA)
         if not self.audio_backend:
             self.audio_backend = ALSABackend(
-                audio_device=audio_device,
+                input_device=input_device,
+                output_device=output_device,
                 mixer_card=mixer_card,
                 mixer_control=mixer_control,
             )

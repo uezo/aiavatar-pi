@@ -118,7 +118,9 @@ client = PiMotionClient(
     character_url="http://192.168.1.1:8000/static/motionpngtuber/miuna",
     url="ws://192.168.1.1:8000/ws",
     lcd=ST7789(width=240, height=320, backlight=80),  # display resolution and brightness
-    buttons=[GPIOButton(pin=17)],  # optional, add if you have buttons
+    # buttons=[GPIOButton(pin=17)],  # optional, add if you have buttons
+    # input_device="plughw:1,0"   # USB Microphone
+    # output_device="plughw:0,0"  # 3.5 mm stereo jack
     volume=90,
 )
 

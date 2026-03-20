@@ -13,11 +13,13 @@ class ALSABackend(AudioBackend):
     def __init__(
         self,
         *,
-        audio_device: Optional[str] = None,
+        input_device: Optional[str] = None,
+        output_device: Optional[str] = None,
         mixer_card: Optional[str] = None,
         mixer_control: Optional[str] = None,
     ):
-        self.audio_device = audio_device
+        self.input_device = input_device
+        self.output_device = output_device
         self.mixer_card = mixer_card
         self.mixer_control = mixer_control
 
@@ -37,8 +39,8 @@ class ALSABackend(AudioBackend):
             "-t", "raw",
             "-q",
         ]
-        if self.audio_device:
-            cmd.extend(["-D", self.audio_device])
+        if self.input_device:
+            cmd.extend(["-D", self.input_device])
         try:
             self._mic_proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -82,8 +84,8 @@ class ALSABackend(AudioBackend):
             "-t", "raw",
             "-q",
         ]
-        if self.audio_device:
-            cmd.extend(["-D", self.audio_device])
+        if self.output_device:
+            cmd.extend(["-D", self.output_device])
         try:
             self._play_proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL

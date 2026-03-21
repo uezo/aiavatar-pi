@@ -1,14 +1,12 @@
 """Raspberry Pi motion client using SPI LCD, ALSA audio, and optional GPIO buttons.
 
 Inherits AIAvatarMotionClient for video loop, mouth compositing, and glow.
-Implements _display_frame() for SPI LCD RGB565 display output.
+Implements _display_frame() for SPI LCD display output.
 
 Requires: alsa-utils, ffmpeg, Pillow, numpy, spidev, RPi.GPIO
 """
 
 import threading
-
-import numpy as np
 
 from ...audio.alsa import ALSABackend
 from ...display.st7789 import ST7789
@@ -59,18 +57,9 @@ class PiMotionClient(AIAvatarMotionClient):
     # _display_frame() implementation
     # ------------------------------------------------------------------
     def _display_frame(self, rgb_frame, width, height):
-        rgb565_data = self._rgb_to_rgb565(rgb_frame)
+        pixel_data = self.lcd.rgb_array_to_pixel_data(rgb_frame)
         with self._lcd_lock:
-            self.lcd.draw_image(0, 0, width, height, rgb565_data)
-
-    @staticmethod
-    def _rgb_to_rgb565(frame):
-        """Convert numpy RGB (h,w,3) to RGB565 big-endian bytes."""
-        r = frame[:, :, 0].astype(np.uint16)
-        g = frame[:, :, 1].astype(np.uint16)
-        b = frame[:, :, 2].astype(np.uint16)
-        rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-        return rgb565.astype(">u2").tobytes()
+            self.lcd.draw_image(0, 0, width, height, pixel_data)
 
     # ------------------------------------------------------------------
     # Cleanup

@@ -4,6 +4,8 @@
 
 aiavatar-pi connects to an [AIAvatarKit](https://github.com/uezo/aiavatarkit) server over WebSocket and renders an animated, talking avatar with lip sync on a Raspberry Pi with a small LCD, or on your desktop for development.
 
+> This library is primarily designed for [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) with [Whisplay HAT](https://www.pisugar.com/products/whisplay-hat-for-pi-zero-2w-audio-display) hardware.
+
 ## ✨ Features
 
 - 🍓 **Portable AI character** - Runs on Raspberry Pi + small SPI LCD, take it anywhere
@@ -43,7 +45,7 @@ You'll need:
 
 ```bash
 # Raspberry Pi (SPI LCD + ALSA)
-sudo apt install alsa-utils ffmpeg
+sudo apt update && sudo apt install alsa-utils ffmpeg python3-dev build-essential
 pip install "aiavatar-pi[pi]"
 
 # PC (desktop, for development)
@@ -106,21 +108,53 @@ finally:
     client.cleanup()
 ```
 
-**🍓 Raspberry Pi — Custom hardware:**
+**🍓 Raspberry Pi — Custom hardware (motion avatar):**
+
+For display options beyond ST7789, see [Display Support](#-display-support).
 
 ```python
 import asyncio
 from aiavatar_pi.device.pi import PiMotionClient
 from aiavatar_pi.display.st7789 import ST7789
-from aiavatar_pi.button import GPIOButton
 
 client = PiMotionClient(
     character_url="http://192.168.1.1:8000/static/motionpngtuber/miuna",
     url="ws://192.168.1.1:8000/ws",
-    lcd=ST7789(width=240, height=320, backlight=80),  # display resolution and brightness
-    # buttons=[GPIOButton(pin=17)],  # optional, add if you have buttons
-    # input_device="plughw:1,0"   # USB Microphone
-    # output_device="plughw:0,0"  # 3.5 mm stereo jack
+    lcd=ST7789(width=240, height=320, backlight=80),
+    # typical for Raspberry Pi 3.5mm jack and USB microphone
+    input_device="plughw:1,0",   # USB Microphone
+    output_device="plughw:0,0",  # 3.5 mm stereo jack
+    mixer_card="0",
+    mixer_control="PCM",
+    # buttons=[GPIOButton(pin=17)],  # optional
+    volume=90,
+)
+
+try:
+    asyncio.run(client.start())
+except KeyboardInterrupt:
+    pass
+finally:
+    client.cleanup()
+```
+
+**🍓 Raspberry Pi — Custom hardware (image avatar):**
+
+```python
+import asyncio
+from aiavatar_pi.device.pi import PiImageClient
+from aiavatar_pi.display.st7789 import ST7789
+
+client = PiImageClient(
+    character_url="http://192.168.1.1:8000/static/images",
+    url="ws://192.168.1.1:8000/ws",
+    lcd=ST7789(width=240, height=320, backlight=80),
+    # typical for Raspberry Pi 3.5mm jack and USB microphone
+    input_device="plughw:1,0",   # USB Microphone
+    output_device="plughw:0,0",  # 3.5 mm stereo jack
+    mixer_card="0",
+    mixer_control="PCM",
+    # buttons=[GPIOButton(pin=17)],  # optional
     volume=90,
 )
 
@@ -210,4 +244,61 @@ client = WhisplayMotionClient(
 | `channels` | `1` | Mic channels |
 | `barge_in_enabled` | `False` | Allow interrupting AI speech |
 | `volume` | `100` (Whisplay) | Playback volume (%) |
+| `mixer_card` | `None` | ALSA mixer card for volume control (Raspberry Pi only, e.g. `"0"`) |
+| `mixer_control` | `None` | ALSA mixer control name (Raspberry Pi only, e.g. `"PCM"`) |
 | `audio_backend` | `None` (auto) | Custom audio backend |
+
+
+## 🖥️ Display Support
+
+`PiImageClient` and `PiMotionClient` accept any display driver via the `lcd=` parameter. Built-in drivers:
+
+| Driver | Interface | Pixel Format | Typical Use |
+|--------|-----------|-------------|-------------|
+| `ST7789` | SPI (userspace) | RGB565 | 1.3"–2.4" small displays |
+| `ILI9488` | SPI (userspace) | RGB666 | 3.5" displays (320x480) |
+| `FramebufferDisplay` | Linux framebuffer | RGB565 | Any display with fbtft/DRM kernel driver |
+
+### ST7789 (default)
+
+Works out of the box. No kernel driver needed.
+
+```python
+from aiavatar_pi.display.st7789 import ST7789
+lcd = ST7789(width=240, height=320, spi_speed_hz=100_000_000, backlight=80)
+```
+
+### ILI9488 (SPI direct)
+
+Uses RGB666 (3 bytes/pixel) over userspace SPI. Simple to set up, but large displays (480x320) may have slow frame rates due to SPI transfer bottleneck.
+
+```python
+from aiavatar_pi.display.ili9488 import ILI9488
+lcd = ILI9488(width=320, height=480, dc_pin=18, rst_pin=22, spi_speed_hz=24_000_000)
+```
+
+Pin numbers use BOARD numbering (not BCM). Default SPI speed is 24 MHz.
+
+### FramebufferDisplay (DMA, for large displays)
+
+Writes to a Linux framebuffer device (`/dev/fb1`). The kernel fbtft driver handles SPI transfer via DMA — much faster than userspace SPI.
+
+```python
+from aiavatar_pi.display.framebuffer import FramebufferDisplay
+lcd = FramebufferDisplay(fb_device="/dev/fb1", width=480, height=320)
+```
+
+**Requires kernel-level setup.** Example using the built-in `piscreen` overlay (ILI9488):
+
+1. Add to `/boot/firmware/config.txt` under `[all]`:
+   ```
+   dtparam=spi=on
+   dtoverlay=piscreen,speed=48000000,rotate=90
+   ```
+2. Reboot and verify: `ls /dev/fb1`
+
+> **Note:** The fbtft kernel driver and overlay configuration are display-specific and outside the scope of this project. Color accuracy, rotation, and performance depend on the overlay and kernel module used. Refer to your display's documentation for the correct setup.
+
+### Custom display drivers
+
+You can create a custom driver by subclassing `DisplayDriver` (for framebuffer-like devices) or `SPIDisplay` (for SPI-connected displays). See the [source code](aiavatar_pi/display/) for reference implementations.

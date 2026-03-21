@@ -1,7 +1,7 @@
 """Raspberry Pi image client using SPI LCD, ALSA audio, and optional GPIO buttons.
 
 Inherits AIAvatarImageClient for face/mouth/blink/glow state management.
-Implements _render() for SPI LCD RGB565 display output.
+Implements _render() for SPI LCD display output.
 
 Requires: alsa-utils, Pillow, numpy, spidev, RPi.GPIO
 """
@@ -37,7 +37,7 @@ class PiImageClient(AIAvatarImageClient):
         # --- Buttons (optional) ---
         self.buttons = list(buttons) if buttons else []
 
-        # --- RGB565 display caches ---
+        # --- Display pixel caches ---
         self._composite_cache = {}
         self._face_only_cache = {}
 
@@ -59,7 +59,7 @@ class PiImageClient(AIAvatarImageClient):
 
         # Build glow mask and mute indicator for LCD resolution
         self._build_glow_mask()
-        self._build_mute_indicator_rgb565()
+        self._build_mute_indicator()
 
         # Set hardware volume
         self.audio_backend.set_volume(volume)
@@ -69,7 +69,7 @@ class PiImageClient(AIAvatarImageClient):
     # ------------------------------------------------------------------
     def _render(self):
         if self._blink_active:
-            data = self._get_face_rgb565("eyes_closed")
+            data = self._get_face_pixels("eyes_closed")
         else:
             data = self._get_composite(self._current_face, self._last_mouth_shape)
 
@@ -80,26 +80,26 @@ class PiImageClient(AIAvatarImageClient):
             data = self._apply_glow(data)
 
         if self._user_muted and self._mute_offsets:
-            data = self._overlay_mute_rgb565(data)
+            data = self._overlay_mute(data)
 
         with self._lcd_lock:
             self.lcd.draw_image(0, 0, self.lcd.width, self.lcd.height, data)
 
     # ------------------------------------------------------------------
-    # RGB565 image cache
+    # Pixel data cache
     # ------------------------------------------------------------------
-    def _get_face_rgb565(self, face_name):
+    def _get_face_pixels(self, face_name):
         if face_name not in self._face_only_cache:
             face_img = self._get_face_pil(face_name)
             if face_img is None:
                 return None
-            self._face_only_cache[face_name] = self.lcd.image_to_rgb565(
+            self._face_only_cache[face_name] = self.lcd.image_to_pixel_data(
                 self.lcd.crop_to_cover(face_img))
         return self._face_only_cache[face_name]
 
     def _get_composite(self, face_name, mouth_name):
         if mouth_name == "closed":
-            return self._get_face_rgb565(face_name)
+            return self._get_face_pixels(face_name)
         key = (face_name, mouth_name)
         if key not in self._composite_cache:
             face_img = self._get_face_pil(face_name)
@@ -107,18 +107,19 @@ class PiImageClient(AIAvatarImageClient):
                 return None
             mouth_img = self._get_mouth_pil(mouth_name)
             if mouth_img is None:
-                return self._get_face_rgb565(face_name)
+                return self._get_face_pixels(face_name)
             composite = Image.alpha_composite(
                 self.lcd.crop_to_cover(face_img),
                 self.lcd.crop_to_cover(mouth_img))
-            self._composite_cache[key] = self.lcd.image_to_rgb565(composite)
+            self._composite_cache[key] = self.lcd.image_to_pixel_data(composite)
         return self._composite_cache[key]
 
     # ------------------------------------------------------------------
-    # Mute indicator (RGB565)
+    # Mute indicator
     # ------------------------------------------------------------------
-    def _build_mute_indicator_rgb565(self):
+    def _build_mute_indicator(self):
         w, h = self.lcd.width, self.lcd.height
+        bpp = self.lcd.bytes_per_pixel
         radius = max(4, min(w, h) // 30)
         margin = radius + 6
         cx, cy = w - margin, margin
@@ -130,22 +131,17 @@ class PiImageClient(AIAvatarImageClient):
                 if dx * dx + dy * dy <= radius * radius:
                     px, py = cx + dx, cy + dy
                     if 0 <= px < w and 0 <= py < h:
-                        self._mute_offsets.append((py * w + px) * 2)
+                        self._mute_offsets.append((py * w + px) * bpp)
 
-        # (220, 50, 50) in RGB565 big-endian
-        r5 = 220 >> 3
-        g6 = 50 >> 2
-        b5 = 50 >> 3
-        val = (r5 << 11) | (g6 << 5) | b5
-        self._mute_rgb565_hi = (val >> 8) & 0xFF
-        self._mute_rgb565_lo = val & 0xFF
+        # (220, 50, 50) in native pixel format
+        self._mute_color_bytes = self.lcd.encode_color(220, 50, 50)
 
-    def _overlay_mute_rgb565(self, data):
+    def _overlay_mute(self, data):
         buf = bytearray(data)
-        hi, lo = self._mute_rgb565_hi, self._mute_rgb565_lo
+        color = self._mute_color_bytes
+        bpp = len(color)
         for offset in self._mute_offsets:
-            buf[offset] = hi
-            buf[offset + 1] = lo
+            buf[offset:offset + bpp] = color
         return bytes(buf)
 
     # ------------------------------------------------------------------
@@ -174,22 +170,15 @@ class PiImageClient(AIAvatarImageClient):
         self._glow_color = (color_a * (1 - t) + color_b * t).astype(np.float32)
         self._glow_alpha = (alpha[:, :, np.newaxis] * self._glow_opacity).astype(np.float32)
 
-    def _apply_glow(self, rgb565_data):
+    def _apply_glow(self, pixel_data):
         w, h = self.lcd.width, self.lcd.height
-        raw = np.frombuffer(rgb565_data, dtype=">u2").reshape(h, w)
-        r = ((raw >> 11) & 0x1F).astype(np.float32) * (255.0 / 31)
-        g = ((raw >> 5) & 0x3F).astype(np.float32) * (255.0 / 63)
-        b = (raw & 0x1F).astype(np.float32) * (255.0 / 31)
-        frame = np.stack([r, g, b], axis=2)
+
+        frame = self.lcd.pixel_data_to_rgb_array(pixel_data, w, h)
 
         a = self._glow_alpha * self._glow_intensity
         frame = (frame * (1.0 - a) + self._glow_color * a).astype(np.uint8)
 
-        r = frame[:, :, 0].astype(np.uint16)
-        g = frame[:, :, 1].astype(np.uint16)
-        b = frame[:, :, 2].astype(np.uint16)
-        rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-        return rgb565.astype(">u2").tobytes()
+        return self.lcd.rgb_array_to_pixel_data(frame)
 
     # ------------------------------------------------------------------
     # Cleanup

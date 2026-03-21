@@ -16,8 +16,13 @@ logger.addHandler(streamHandler)
 client = PiMotionClient(
     url=WEBSOCKET_URL,
     character_url=CHARACTER_URL,
-    # input_device="plughw:1,0"   # USB Microphone
-    # output_device="plughw:0,0"  # 3.5 mm stereo jack
+    # typical for Raspberry Pi 3.5mm jack and USB microphone
+    input_device="plughw:1,0",   # USB Microphone
+    output_device="plughw:0,0",  # 3.5 mm stereo jack
+    mixer_card="0",
+    mixer_control="PCM",
+    # buttons=[GPIOButton(pin=17)],  # optional
+    volume=90,
 )
 
 try:

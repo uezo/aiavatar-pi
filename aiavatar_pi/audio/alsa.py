@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
 from .base import AudioBackend
+
+logger = logging.getLogger(__name__)
 
 
 class ALSABackend(AudioBackend):
@@ -17,11 +21,13 @@ class ALSABackend(AudioBackend):
         output_device: Optional[str] = None,
         mixer_card: Optional[str] = None,
         mixer_control: Optional[str] = None,
+        playback_buffer_size: Optional[int] = None,
     ):
         self.input_device = input_device
         self.output_device = output_device
         self.mixer_card = mixer_card
         self.mixer_control = mixer_control
+        self.playback_buffer_size = playback_buffer_size
 
         self._mic_proc = None
         self._play_proc = None
@@ -29,6 +35,12 @@ class ALSABackend(AudioBackend):
         self._bytes_per_sec = 0
         self._play_start = 0.0
         self._bytes_written = 0
+        self._before_play: Callable[[bytes, int, int, int], None] | None = None
+        self._hook_executor = ThreadPoolExecutor(max_workers=1)
+
+    def before_play(self, func: Callable[[bytes, int, int, int], None]):
+        self._before_play = func
+        return func
 
     def mic_open(self, sample_rate: int, channels: int, chunk_size: int) -> None:
         cmd = [
@@ -41,6 +53,10 @@ class ALSABackend(AudioBackend):
         ]
         if self.input_device:
             cmd.extend(["-D", self.input_device])
+        logger.info(
+            "Mic opening: device=%s, rate=%dHz, channels=%d, chunk=%d",
+            self.input_device or "default", sample_rate, channels, chunk_size,
+        )
         try:
             self._mic_proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -49,6 +65,7 @@ class ALSABackend(AudioBackend):
             raise RuntimeError(
                 "arecord not found. Install alsa-utils: sudo apt install alsa-utils"
             ) from e
+        logger.info("Mic opened (arecord pid=%d)", self._mic_proc.pid)
 
     def mic_read(self, chunk_size: int, channels: int) -> bytes:
         n_bytes = chunk_size * channels * 2
@@ -56,10 +73,12 @@ class ALSABackend(AudioBackend):
 
     def mic_close(self) -> None:
         if self._mic_proc:
+            logger.info("Mic closing (arecord pid=%d)", self._mic_proc.pid)
             self._mic_proc.terminate()
             try:
                 self._mic_proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
+                logger.warning("arecord did not exit in time, killing")
                 self._mic_proc.kill()
             self._mic_proc = None
 
@@ -69,6 +88,7 @@ class ALSABackend(AudioBackend):
                 and self._play_proc.poll() is None
                 and self._play_params == params):
             # Reuse existing aplay process, just reset pacing
+            logger.debug("Reusing aplay process (pid=%d)", self._play_proc.pid)
             self._play_start = time.monotonic()
             self._bytes_written = 0
             return
@@ -86,6 +106,12 @@ class ALSABackend(AudioBackend):
         ]
         if self.output_device:
             cmd.extend(["-D", self.output_device])
+        if self.playback_buffer_size:
+            cmd.extend(["--buffer-size", str(self.playback_buffer_size)])
+        logger.info(
+            "Player opening: device=%s, format=%s, rate=%dHz, channels=%d",
+            self.output_device or "default", fmt, framerate, channels,
+        )
         try:
             self._play_proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -94,6 +120,7 @@ class ALSABackend(AudioBackend):
             raise RuntimeError(
                 "aplay not found. Install alsa-utils: sudo apt install alsa-utils"
             ) from e
+        logger.info("Player opened (aplay pid=%d)", self._play_proc.pid)
 
         self._play_params = params
         self._bytes_per_sec = framerate * sampwidth * channels
@@ -101,10 +128,14 @@ class ALSABackend(AudioBackend):
         self._bytes_written = 0
 
     def player_write(self, data: bytes, stop_waiter: Callable[[float], bool]) -> None:
+        if self._before_play and self._play_params:
+            channels, sampwidth, framerate = self._play_params
+            self._hook_executor.submit(self._before_play, data, framerate, channels, sampwidth)
         try:
             self._play_proc.stdin.write(data)
             self._play_proc.stdin.flush()
-        except (BrokenPipeError, OSError):
+        except (BrokenPipeError, OSError) as e:
+            logger.warning("Player write failed: %s", e)
             return
 
         self._bytes_written += len(data)
@@ -121,6 +152,7 @@ class ALSABackend(AudioBackend):
         self._play_proc = None
         self._play_params = None
         if proc and proc.poll() is None:
+            logger.info("Player closing (aplay pid=%d)", proc.pid)
             try:
                 proc.stdin.close()
             except OSError:
@@ -128,10 +160,12 @@ class ALSABackend(AudioBackend):
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
+                logger.warning("aplay did not exit in time, killing")
                 proc.kill()
 
     def player_stop(self) -> None:
         # Barge-in: kill immediately, force fresh open on next playback.
+        logger.info("Player stopping (barge-in)")
         self._kill_player()
 
     def _kill_player(self) -> None:
@@ -150,15 +184,17 @@ class ALSABackend(AudioBackend):
             return
         if isinstance(level, (int, float)):
             level = f"{int(level)}%"
+        logger.info("Setting volume: %s %s = %s", self.mixer_card, self.mixer_control, level)
         try:
             subprocess.run(
                 ["amixer", "-D", f"hw:{self.mixer_card}", "sset", self.mixer_control, level],
                 capture_output=True,
                 check=True,
             )
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            pass
+        except (FileNotFoundError, subprocess.CalledProcessError) as e:
+            logger.warning("Failed to set volume: %s", e)
 
     def cleanup(self) -> None:
+        self._hook_executor.shutdown(wait=False)
         self.mic_close()
         self._kill_player()

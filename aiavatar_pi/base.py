@@ -44,6 +44,7 @@ class AIAvatarClientBase:
         self.url = url
         self.session_id = session_id
         self.user_id = user_id
+        self.context_id: str = None
         self.api_key = api_key
 
         self.sample_rate = sample_rate
@@ -264,6 +265,9 @@ class AIAvatarClientBase:
                         await result
                 except Exception as e:
                     logger.warning(f"on_message error: {e}")
+
+            if context_id := msg.get("context_id"):
+                self.context_id = context_id
 
             if msg_type == "connected":
                 self.user_id = msg.get("user_id", self.user_id)

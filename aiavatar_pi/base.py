@@ -77,6 +77,7 @@ class AIAvatarClientBase:
         self.on_playback_analyze = None  # func(rms: float, centroid01: float, t_sec: float)
         self.on_playback_end = None      # func()
         self.on_voiced = None            # func()
+        self._on_message = None          # func(msg: dict) | coroutine; called on every incoming WS message
 
         # Mute indicator (built lazily by subclass)
         self._mute_indicator = None
@@ -89,6 +90,18 @@ class AIAvatarClientBase:
         # Start playback worker
         self._play_thread = threading.Thread(target=self._playback_worker, daemon=True)
         self._play_thread.start()
+
+    def on_message(self, func):
+        """Register message handler as decorator.
+
+        Usage::
+
+            @client.on_message
+            async def handle(msg: dict):
+                ...
+        """
+        self._on_message = func
+        return func
 
     # ------------------------------------------------------------------
     # Microphone
@@ -229,6 +242,14 @@ class AIAvatarClientBase:
 
             msg_type = msg.get("type")
             metadata = msg.get("metadata") or {}
+
+            if self._on_message:
+                try:
+                    result = self._on_message(msg)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.warning(f"on_message error: {e}")
 
             if msg_type == "connected":
                 self.user_id = msg.get("user_id", self.user_id)

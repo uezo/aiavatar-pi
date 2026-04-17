@@ -44,6 +44,7 @@ class AIAvatarClientBase:
         self.url = url
         self.session_id = session_id
         self.user_id = user_id
+        self.context_id: str = None
         self.api_key = api_key
 
         self.sample_rate = sample_rate
@@ -78,6 +79,9 @@ class AIAvatarClientBase:
         self.on_playback_end = None      # func()
         self.on_voiced = None            # func()
 
+        self._on_message = None          # func(msg: dict) | coroutine; called on every incoming WS message
+        self._on_vision_requested = None  # func(source: str) | coroutine; called when vision is requested
+
         # Mute indicator (built lazily by subclass)
         self._mute_indicator = None
 
@@ -89,6 +93,30 @@ class AIAvatarClientBase:
         # Start playback worker
         self._play_thread = threading.Thread(target=self._playback_worker, daemon=True)
         self._play_thread.start()
+
+    def on_message(self, func):
+        """Register message handler as decorator.
+
+        Usage::
+
+            @client.on_message
+            async def handle(msg: dict):
+                ...
+        """
+        self._on_message = func
+        return func
+
+    def on_vision_requested(self, func):
+        """Register vision request handler as decorator.
+
+        Usage::
+
+            @client.on_vision_requested
+            async def handle(source: str):
+                ...
+        """
+        self._on_vision_requested = func
+        return func
 
     # ------------------------------------------------------------------
     # Microphone
@@ -230,6 +258,17 @@ class AIAvatarClientBase:
             msg_type = msg.get("type")
             metadata = msg.get("metadata") or {}
 
+            if self._on_message:
+                try:
+                    result = self._on_message(msg)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.warning(f"on_message error: {e}")
+
+            if context_id := msg.get("context_id"):
+                self.context_id = context_id
+
             if msg_type == "connected":
                 self.user_id = msg.get("user_id", self.user_id)
                 logger.info(f"Connected: session={msg.get('session_id')}, user={self.user_id}")
@@ -266,6 +305,14 @@ class AIAvatarClientBase:
                     self._play_queue.put((audio_bytes, face_name, face_duration))
                 elif face_name and self.on_face_updated:
                     self.on_face_updated(face_name, face_duration)
+
+            elif msg_type == "vision" and self._on_vision_requested:
+                try:
+                    result = self._on_vision_requested(metadata.get("source"))
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.warning(f"on_vision_requested error: {e}")
 
             elif msg_type == "final":
                 self._is_server_processing = False

@@ -77,7 +77,9 @@ class AIAvatarClientBase:
         self.on_playback_analyze = None  # func(rms: float, centroid01: float, t_sec: float)
         self.on_playback_end = None      # func()
         self.on_voiced = None            # func()
+
         self._on_message = None          # func(msg: dict) | coroutine; called on every incoming WS message
+        self._on_vision_requested = None  # func(source: str) | coroutine; called when vision is requested
 
         # Mute indicator (built lazily by subclass)
         self._mute_indicator = None
@@ -101,6 +103,18 @@ class AIAvatarClientBase:
                 ...
         """
         self._on_message = func
+        return func
+
+    def on_vision_requested(self, func):
+        """Register vision request handler as decorator.
+
+        Usage::
+
+            @client.on_vision_requested
+            async def handle(source: str):
+                ...
+        """
+        self._on_vision_requested = func
         return func
 
     # ------------------------------------------------------------------
@@ -287,6 +301,14 @@ class AIAvatarClientBase:
                     self._play_queue.put((audio_bytes, face_name, face_duration))
                 elif face_name and self.on_face_updated:
                     self.on_face_updated(face_name, face_duration)
+
+            elif msg_type == "vision" and self._on_vision_requested:
+                try:
+                    result = self._on_vision_requested(metadata.get("source"))
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.warning(f"on_vision_requested error: {e}")
 
             elif msg_type == "final":
                 self._is_server_processing = False
